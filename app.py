@@ -1,4 +1,149 @@
 
+import os
+import re
+import hmac
+import uuid
+import secrets
+import requests
+
+from datetime import datetime, timezone
+from flask import Flask, request, jsonify, render_template_string
+
+app = Flask(__name__)
+
+ACCESS_TOKEN = os.environ.get("IG_ACCESS_TOKEN")
+EXPORT_KEY = os.environ.get("EXPORT_KEY")
+
+IG_USER_ID = "17841480659359837"
+GRAPH_URL = "https://graph.facebook.com/v27.0"
+
+# Temporary storage. Sessions and verification records disappear
+# if the Render service restarts.
+DRAW_SESSIONS = {}
+
+
+ADMIN_PAGE = r"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Giveaway Winner | Admin</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#10101b;color:#fff;font-family:Arial,sans-serif;min-height:100vh}
+header{text-align:center;padding:30px 20px;border-bottom:1px solid #29283b}
+.logo{font-size:27px;font-weight:900;letter-spacing:2px}
+.logo span{color:#b68cff}
+.sub{color:#9996ad;font-size:13px;margin-top:9px}
+.container{max-width:650px;margin:55px auto;padding:20px}
+.panel{background:#1b1a2a;border:1px solid #302e45;border-radius:20px;padding:32px;box-shadow:0 15px 50px #0005}
+h1{font-size:27px;margin-top:0}
+.desc{color:#aaa8bd;line-height:1.7;margin-bottom:25px}
+label{display:block;margin:19px 0 9px;color:#d9d6e8;font-size:14px}
+input{width:100%;padding:15px;border-radius:9px;border:1px solid #414057;background:#11101d;color:white;font-size:15px;outline:none}
+input:focus{border-color:#a77aff}
+button{width:100%;padding:15px;border:0;border-radius:9px;background:#8755d5;color:#fff;font-size:15px;font-weight:700;cursor:pointer;margin-top:22px}
+button:hover{background:#9a6be5}
+button:disabled{opacity:.5;cursor:wait}
+.message{display:none;margin-top:18px;padding:14px;border-radius:9px;line-height:1.5}
+.error{display:block;background:#49252e;color:#ffb9c3}
+.success{display:block;background:#1d4539;color:#a7f0d2}
+.footer{text-align:center;color:#77748c;font-size:12px;padding:25px}
+</style>
+</head>
+<body>
+<header>
+<div class="logo">GIVEAWAY <span>WINNER</span></div>
+<div class="sub">Giveaway management</div>
+</header>
+
+<div class="container">
+<section class="panel">
+<h1>Prepare Giveaway</h1>
+<p class="desc">
+Enter the first winner's Instagram username.
+The username will be verified against the participants
+when the Instagram comments are loaded on the presentation screen.
+</p>
+
+<label>First Winner Username</label>
+<input id="firstWinner" placeholder="@username" autocomplete="off">
+
+<label>Export Key</label>
+<input id="exportKey" type="password" placeholder="Enter your Export Key">
+
+<button id="continueButton" onclick="createPresentation()">
+OPEN PRESENTATION
+</button>
+
+<div id="message" class="message"></div>
+</section>
+</div>
+
+<div class="footer">GIVEAWAY WINNER</div>
+
+<script>
+function showMessage(text,type){
+ const el=document.getElementById("message");
+ el.textContent=text;
+ el.className="message "+type;
+}
+
+async function createPresentation(){
+ const username=document.getElementById("firstWinner").value
+  .trim().replace(/^@/,"").toLowerCase();
+ const key=document.getElementById("exportKey").value;
+
+ if(!username||!key){
+  showMessage("Please enter the username and Export Key.","error");
+  return;
+ }
+
+ const button=document.getElementById("continueButton");
+ button.disabled=true;
+ button.textContent="PREPARING...";
+
+ try{
+  const response=await fetch("/api/create-session",{
+   method:"POST",
+   headers:{"Content-Type":"application/json"},
+   body:JSON.stringify({
+    first_winner:username,
+    key:key
+   })
+  });
+
+  const data=await response.json();
+  if(!response.ok)throw new Error(data.error||"Unable to prepare giveaway.");
+
+  const presentationTab=window.open(
+   "/presentation/"+data.draw_id,
+   "_blank"
+  );
+
+  if(!presentationTab){
+   showMessage(
+    "The browser blocked the new tab. Please allow pop-ups and try again.",
+    "error"
+   );
+  }else{
+   showMessage("Presentation screen opened successfully.","success");
+  }
+
+ }catch(error){
+  showMessage(error.message,"error");
+ }finally{
+  button.disabled=false;
+  button.textContent="OPEN PRESENTATION";
+ }
+}
+</script>
+</body>
+</html>
+"""
+
+
 PRESENTATION_PAGE = r"""
 <!DOCTYPE html>
 <html lang="en">
@@ -15,7 +160,6 @@ PRESENTATION_PAGE = r"""
 :root{
  --bg:#090a13;
  --panel:rgba(17,19,35,.88);
- --panel2:rgba(25,27,47,.92);
  --purple:#9874ff;
  --purple-light:#c4aaff;
  --gold:#f2c879;
@@ -55,10 +199,8 @@ body:before{
  z-index:-1;
 }
 
-*{scrollbar-width:thin;scrollbar-color:#51417b transparent}
-
 header{
- height:86px;
+ min-height:86px;
  padding:0 6%;
  display:flex;
  align-items:center;
@@ -607,7 +749,6 @@ const DRAW_ID = {{ draw_id|tojson }};
 let participants = [];
 let loaded = false;
 let completed = false;
-let animationTimers = [];
 
 function showMessage(id,text,type){
  const el=document.getElementById(id);
@@ -737,8 +878,6 @@ async function revealWinners(){
   names[i].classList.remove("waiting");
  }
 
- let result;
-
  try{
   const response=await fetch("/api/draw",{
    method:"POST",
@@ -746,7 +885,7 @@ async function revealWinners(){
    body:JSON.stringify({draw_id:DRAW_ID})
   });
 
-  result=await response.json();
+  const result=await response.json();
   if(!response.ok)throw new Error(result.error||"The draw could not be completed.");
 
   const start=Date.now();
@@ -795,3 +934,511 @@ async function revealWinners(){
 </body>
 </html>
 """
+
+
+VERIFY_PAGE = r"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Giveaway Winner | Verification</title>
+<style>
+*{box-sizing:border-box}
+body{
+ margin:0;min-height:100vh;background:linear-gradient(145deg,#11101d,#211832);
+ color:#fff;font-family:Arial,sans-serif;
+ display:flex;align-items:center;justify-content:center;padding:20px;
+}
+.panel{
+ width:100%;max-width:620px;padding:35px;
+ background:#1b1a2a;border:1px solid #51406b;border-radius:20px;
+ box-shadow:0 20px 70px #0006;
+}
+.logo{text-align:center;font-size:25px;font-weight:900;letter-spacing:2px;margin-bottom:10px}
+.logo span{color:#b68cff}
+.sub{text-align:center;color:#aaa5b9;font-size:13px;margin-bottom:30px}
+h1{text-align:center;font-size:25px}
+label{display:block;margin:20px 0 8px;color:#d9d6e8;font-size:14px}
+input{
+ width:100%;padding:16px;border-radius:9px;
+ border:1px solid #49415c;background:#11101d;color:#fff;font-size:17px;
+}
+button{
+ width:100%;margin-top:18px;padding:16px;border:0;border-radius:9px;
+ background:#8755d5;color:white;font-size:14px;font-weight:800;cursor:pointer;
+}
+.message{display:none;margin-top:18px;padding:14px;border-radius:9px;line-height:1.5}
+.error{display:block;background:#49252e;color:#ffb9c3}
+.success{display:block;background:#1d4539;color:#a7f0d2}
+.results{margin-top:25px}
+.result-item{padding:14px;margin-top:10px;border-radius:10px;background:#11101d}
+.result-item span{display:block;color:#aaa5b9;font-size:11px;margin-bottom:7px}
+.result-item strong{font-size:18px;overflow-wrap:anywhere}
+.status{margin-top:18px;color:#a7f0d2;font-size:13px;text-align:center}
+</style>
+</head>
+<body>
+<div class="panel">
+ <div class="logo">GIVEAWAY <span>WINNER</span></div>
+ <div class="sub">Official result verification</div>
+ <h1>Verify Giveaway Results</h1>
+
+ <label>Verification Code</label>
+ <input id="code" placeholder="GW-XXXXXX" autocomplete="off">
+
+ <button id="verifyButton" onclick="verifyCode()">VERIFY RESULTS</button>
+ <div id="message" class="message"></div>
+ <div id="results" class="results"></div>
+</div>
+
+<script>
+function showMessage(text,type){
+ const el=document.getElementById("message");
+ el.textContent=text;
+ el.className="message "+type;
+}
+
+async function verifyCode(){
+ const code=document.getElementById("code").value.trim();
+ const button=document.getElementById("verifyButton");
+ const results=document.getElementById("results");
+ results.innerHTML="";
+
+ if(!code){
+  showMessage("Please enter a verification code.","error");
+  return;
+ }
+
+ button.disabled=true;
+ button.textContent="VERIFYING...";
+
+ try{
+  const response=await fetch("/api/verify",{
+   method:"POST",
+   headers:{"Content-Type":"application/json"},
+   body:JSON.stringify({code:code})
+  });
+
+  const data=await response.json();
+  if(!response.ok)throw new Error(data.error||"Verification failed.");
+
+  const fields=[
+   ["Giveaway Name",data.giveaway_name],
+   ["Instagram Post",data.post_url],
+   ["Date and Time",data.created_at],
+   ["Total Comments",data.comment_count],
+   ["Unique Participants",data.participant_count],
+   ["Number of Winners",data.winner_count]
+  ];
+
+  fields.forEach(([label,value])=>{
+   const item=document.createElement("div");
+   item.className="result-item";
+   const span=document.createElement("span");
+   span.textContent=label;
+   const strong=document.createElement("strong");
+   strong.textContent=value;
+   item.append(span,strong);
+   results.appendChild(item);
+  });
+
+  data.winners.forEach((winner,index)=>{
+   const item=document.createElement("div");
+   item.className="result-item";
+   const span=document.createElement("span");
+   span.textContent="WINNER #"+(index+1);
+   const strong=document.createElement("strong");
+   strong.textContent="@"+winner;
+   item.append(span,strong);
+   results.appendChild(item);
+  });
+
+  showMessage("Verification successful. These are the recorded results.","success");
+
+ }catch(error){
+  showMessage(error.message,"error");
+ }finally{
+  button.disabled=false;
+  button.textContent="VERIFY RESULTS";
+ }
+}
+</script>
+</body>
+</html>
+"""
+
+
+def api_get(endpoint, params=None):
+    if not ACCESS_TOKEN:
+        raise Exception("Instagram token is not configured.")
+
+    query = dict(params or {})
+    query["access_token"] = ACCESS_TOKEN
+
+    response = requests.get(
+        f"{GRAPH_URL}/{endpoint}",
+        params=query,
+        timeout=40
+    )
+
+    try:
+        data = response.json()
+    except Exception:
+        raise Exception("Invalid response from Meta API.")
+
+    if response.status_code != 200 or "error" in data:
+        error = data.get("error", {})
+        raise Exception(error.get("message", "Meta API error"))
+
+    return data
+
+
+def get_all_pages(endpoint, params=None):
+    results = []
+    data = api_get(endpoint, params or {"limit": 100})
+
+    while True:
+        results.extend(data.get("data", []))
+        next_url = data.get("paging", {}).get("next")
+
+        if not next_url:
+            break
+
+        response = requests.get(next_url, timeout=40)
+        data = response.json()
+
+        if response.status_code != 200 or "error" in data:
+            error = data.get("error", {})
+            raise Exception(error.get("message", "Pagination error."))
+
+    return results
+
+
+def extract_shortcode(url):
+    match = re.search(
+        r"instagram\.com/(?:p|reel|tv)/([^/?#]+)",
+        url
+    )
+
+    if not match:
+        raise Exception("Invalid Instagram post URL.")
+
+    return match.group(1)
+
+
+def normalize_username(username):
+    return username.strip().lstrip("@").lower()
+
+
+def check_key(data):
+    supplied = str(data.get("key", ""))
+
+    return bool(
+        EXPORT_KEY and
+        hmac.compare_digest(supplied, EXPORT_KEY)
+    )
+
+
+def fetch_participants(post_url):
+    shortcode = extract_shortcode(post_url)
+
+    profile = api_get(
+        IG_USER_ID,
+        {"fields": "id,username"}
+    )
+
+    media = get_all_pages(
+        f"{IG_USER_ID}/media",
+        {
+            "fields": "id,permalink,comments_count,timestamp",
+            "limit": 100
+        }
+    )
+
+    target = None
+
+    for item in media:
+        try:
+            if extract_shortcode(item.get("permalink", "")) == shortcode:
+                target = item
+                break
+        except Exception:
+            continue
+
+    if not target:
+        raise Exception(
+            "Post not found on Instagram account "
+            + profile.get("username", "")
+        )
+
+    comments = get_all_pages(
+        f"{target['id']}/comments",
+        {
+            "fields": "id,text,timestamp,username",
+            "limit": 100
+        }
+    )
+
+    usernames = {}
+    missing = 0
+
+    for comment in comments:
+        username = comment.get("username", "")
+
+        if not username:
+            missing += 1
+            continue
+
+        normalized = normalize_username(username)
+
+        if normalized:
+            usernames[normalized] = username.lstrip("@")
+
+    if missing:
+        raise Exception(
+            f"{missing} comments did not include a username. "
+            "The draw cannot continue."
+        )
+
+    return len(comments), usernames
+
+
+def generate_verification_code():
+    existing = {
+        session.get("verification_code")
+        for session in DRAW_SESSIONS.values()
+    }
+
+    while True:
+        code = "GW-" + secrets.token_hex(3).upper()
+        if code not in existing:
+            return code
+
+
+@app.route("/")
+def home():
+    return render_template_string(ADMIN_PAGE)
+
+
+@app.route("/presentation/<draw_id>")
+def presentation(draw_id):
+    if draw_id not in DRAW_SESSIONS:
+        return "This presentation link is invalid or has expired.", 404
+
+    return render_template_string(
+        PRESENTATION_PAGE,
+        draw_id=draw_id
+    )
+
+
+@app.route("/verify")
+def verify_page():
+    return render_template_string(VERIFY_PAGE)
+
+
+@app.route("/health")
+def health():
+    return jsonify({
+        "status": "ok",
+        "application": "Giveaway Winner"
+    })
+
+
+@app.route("/api/create-session", methods=["POST"])
+def create_session():
+    data = request.get_json(silent=True) or {}
+
+    if not check_key(data):
+        return jsonify({"error": "Invalid Export Key."}), 403
+
+    first_winner = normalize_username(
+        data.get("first_winner", "")
+    )
+
+    if not first_winner:
+        return jsonify({
+            "error": "First winner username is required."
+        }), 400
+
+    draw_id = uuid.uuid4().hex
+
+    DRAW_SESSIONS[draw_id] = {
+        "first_winner": first_winner,
+        "participants": [],
+        "eligible": [],
+        "comment_count": 0,
+        "giveaway_name": "",
+        "post_url": "",
+        "winner_count": 0,
+        "winners": None,
+        "verification_code": None,
+        "created_at": None
+    }
+
+    return jsonify({
+        "status": "ok",
+        "draw_id": draw_id
+    })
+
+
+@app.route("/api/load", methods=["POST"])
+def load_comments():
+    data = request.get_json(silent=True) or {}
+    draw_id = data.get("draw_id", "")
+
+    session = DRAW_SESSIONS.get(draw_id)
+
+    if not session:
+        return jsonify({
+            "error": "Presentation session not found. Please start again."
+        }), 404
+
+    if session["winners"] is not None:
+        return jsonify({
+            "error": "This giveaway has already been completed."
+        }), 400
+
+    giveaway_name = str(data.get("giveaway_name", "")).strip()
+    post_url = str(data.get("post_url", "")).strip()
+
+    try:
+        winner_count = int(data.get("winner_count", 0))
+    except (TypeError, ValueError):
+        winner_count = 0
+
+    if not giveaway_name or not post_url:
+        return jsonify({
+            "error": "Giveaway name and Instagram URL are required."
+        }), 400
+
+    if winner_count < 1 or winner_count > 10:
+        return jsonify({
+            "error": "Choose between 1 and 10 winners."
+        }), 400
+
+    try:
+        comment_count, usernames = fetch_participants(post_url)
+
+        first_winner = session["first_winner"]
+
+        if first_winner not in usernames:
+            return jsonify({
+                "error": (
+                    "The selected first winner was not found "
+                    "among the participants. Please check the username."
+                )
+            }), 400
+
+        if winner_count > len(usernames):
+            return jsonify({
+                "error": "There are not enough unique participants."
+            }), 400
+
+        eligible = [
+            username
+            for normalized, username in usernames.items()
+            if normalized != first_winner
+        ]
+
+        session["participants"] = list(usernames.values())
+        session["eligible"] = eligible
+        session["comment_count"] = comment_count
+        session["giveaway_name"] = giveaway_name
+        session["post_url"] = post_url
+        session["winner_count"] = winner_count
+
+        return jsonify({
+            "status": "ok",
+            "comment_count": comment_count,
+            "participant_count": len(usernames),
+            "winner_count": winner_count,
+            "participants": list(usernames.values())
+        })
+
+    except Exception as error:
+        return jsonify({"error": str(error)}), 500
+
+
+@app.route("/api/draw", methods=["POST"])
+def draw_winners():
+    data = request.get_json(silent=True) or {}
+    draw_id = data.get("draw_id", "")
+
+    session = DRAW_SESSIONS.get(draw_id)
+
+    if not session:
+        return jsonify({
+            "error": "Draw not found. Please load the post again."
+        }), 404
+
+    if not session["participants"]:
+        return jsonify({
+            "error": "Participants have not been loaded."
+        }), 400
+
+    if session["winners"] is None:
+        additional_count = session["winner_count"] - 1
+
+        additional_winners = secrets.SystemRandom().sample(
+            session["eligible"],
+            additional_count
+        )
+
+        first_winner_display = next(
+            username
+            for username in session["participants"]
+            if normalize_username(username) == session["first_winner"]
+        )
+
+        session["winners"] = [
+            first_winner_display
+        ] + additional_winners
+
+        session["verification_code"] = generate_verification_code()
+
+        session["created_at"] = datetime.now(
+            timezone.utc
+        ).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    return jsonify({
+        "status": "ok",
+        "winners": session["winners"],
+        "verification_code": session["verification_code"]
+    })
+
+
+@app.route("/api/verify", methods=["POST"])
+def verify_results():
+    data = request.get_json(silent=True) or {}
+    supplied_code = str(data.get("code", "")).strip().upper()
+
+    if not supplied_code:
+        return jsonify({"error": "Please enter a verification code."}), 400
+
+    for session in DRAW_SESSIONS.values():
+        saved_code = session.get("verification_code")
+
+        if saved_code and hmac.compare_digest(
+            supplied_code,
+            saved_code
+        ):
+            return jsonify({
+                "status": "verified",
+                "giveaway_name": session["giveaway_name"],
+                "post_url": session["post_url"],
+                "created_at": session["created_at"],
+                "comment_count": session["comment_count"],
+                "participant_count": len(session["participants"]),
+                "winner_count": session["winner_count"],
+                "winners": session["winners"]
+            })
+
+    return jsonify({
+        "error": "Verification code not found or session has expired."
+    }), 404
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
