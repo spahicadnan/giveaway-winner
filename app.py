@@ -6,9 +6,7 @@ import uuid
 import secrets
 import requests
 
-from flask import (
-    Flask, request, jsonify, render_template_string
-)
+from flask import Flask, request, jsonify, render_template_string
 
 app = Flask(__name__)
 
@@ -18,6 +16,8 @@ EXPORT_KEY = os.environ.get("EXPORT_KEY")
 IG_USER_ID = "17841480659359837"
 GRAPH_URL = "https://graph.facebook.com/v27.0"
 
+# Temporary storage. Sessions and verification records disappear
+# if the Render service restarts.
 DRAW_SESSIONS = {}
 
 
@@ -35,10 +35,7 @@ header{text-align:center;padding:30px 20px;border-bottom:1px solid #29283b}
 .logo{font-size:27px;font-weight:900;letter-spacing:2px}
 .logo span{color:#b68cff}
 .sub{color:#9996ad;font-size:13px;margin-top:9px}
-.container{max-width:700px;margin:55px auto;padding:20px}
-.steps{display:flex;justify-content:center;gap:12px;margin-bottom:30px}
-.step{padding:10px 17px;border-radius:30px;background:#242337;color:#9996ad;font-size:13px}
-.step.active{background:#7446bd;color:#fff}
+.container{max-width:650px;margin:55px auto;padding:20px}
 .panel{background:#1b1a2a;border:1px solid #302e45;border-radius:20px;padding:32px;box-shadow:0 15px 50px #0005}
 h1{font-size:27px;margin-top:0}
 .desc{color:#aaa8bd;line-height:1.7;margin-bottom:25px}
@@ -48,19 +45,10 @@ input:focus{border-color:#a77aff}
 button{width:100%;padding:15px;border:0;border-radius:9px;background:#8755d5;color:#fff;font-size:15px;font-weight:700;cursor:pointer;margin-top:22px}
 button:hover{background:#9a6be5}
 button:disabled{opacity:.5;cursor:wait}
-.secondary{background:#302e45}
 .message{display:none;margin-top:18px;padding:14px;border-radius:9px;line-height:1.5}
 .error{display:block;background:#49252e;color:#ffb9c3}
 .success{display:block;background:#1d4539;color:#a7f0d2}
-.hidden{display:none!important}
-.stats{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:22px}
-.stat{background:#11101d;padding:20px;border-radius:12px;text-align:center}
-.stat strong{display:block;font-size:30px;color:#c49aff;margin-bottom:7px}
-.stat span{font-size:13px;color:#aaa8bd}
-.winner-preview{padding:18px;margin-top:20px;background:#302449;border:1px solid #67479b;border-radius:12px}
-.winner-preview strong{display:block;color:#d7b8ff;font-size:20px;margin-top:8px}
 .footer{text-align:center;color:#77748c;font-size:12px;padding:25px}
-@media(max-width:600px){.container{margin:20px auto}.panel{padding:22px}.steps{gap:5px}.step{padding:9px;font-size:11px}}
 </style>
 </head>
 <body>
@@ -70,136 +58,73 @@ button:disabled{opacity:.5;cursor:wait}
 </header>
 
 <div class="container">
-<div class="steps">
-<div id="step1" class="step active">01 · First Winner</div>
-<div id="step2" class="step">02 · Instagram Post</div>
-</div>
-
-<section id="panel1" class="panel">
-<h1>Select First Winner</h1>
+<section class="panel">
+<h1>Prepare Giveaway</h1>
 <p class="desc">
-Enter the Instagram username of your selected winner.
-Their participation will be verified against the comments
-before the draw can continue.
+Enter the first winner's Instagram username.
+The username will be verified against the participants
+when the Instagram comments are loaded on the presentation screen.
 </p>
-<label>Instagram Username</label>
+
+<label>First Winner Username</label>
 <input id="firstWinner" placeholder="@username" autocomplete="off">
-<button onclick="goToStep2()">Continue</button>
-<div id="message1" class="message"></div>
-</section>
 
-<section id="panel2" class="panel hidden">
-<h1>Import Instagram Comments</h1>
-<p class="desc">
-Enter the Instagram post URL. The system will retrieve
-the available comments and prepare the participant list.
-</p>
-<label>Instagram Post URL</label>
-<input id="postUrl" type="url" placeholder="https://www.instagram.com/p/...">
 <label>Export Key</label>
 <input id="exportKey" type="password" placeholder="Enter your Export Key">
 
-<button id="loadButton" onclick="loadComments()">Load Comments</button>
-<button class="secondary" onclick="backToStep1()">Back</button>
+<button id="continueButton" onclick="createPresentation()">
+OPEN PRESENTATION
+</button>
 
-<div id="message2" class="message"></div>
-
-<div id="stats" class="hidden">
-<div class="stats">
-<div class="stat"><strong id="commentCount">0</strong><span>Total Comments</span></div>
-<div class="stat"><strong id="participantCount">0</strong><span>Unique Participants</span></div>
-</div>
-<div class="winner-preview">
-<div>First Winner Verified</div>
-<strong id="previewWinner"></strong>
-</div>
-<button onclick="openPresentation()">Open Presentation Screen</button>
-</div>
+<div id="message" class="message"></div>
 </section>
 </div>
+
 <div class="footer">GIVEAWAY WINNER</div>
 
 <script>
-let firstWinner = "";
-let drawId = "";
-let exportKey = "";
-
-function showMessage(id,text,type){
- const el=document.getElementById(id);
+function showMessage(text,type){
+ const el=document.getElementById("message");
  el.textContent=text;
  el.className="message "+type;
 }
 
-function goToStep2(){
+async function createPresentation(){
  const username=document.getElementById("firstWinner").value
- .trim().replace(/^@/,"").toLowerCase();
+  .trim().replace(/^@/,"").toLowerCase();
+ const key=document.getElementById("exportKey").value;
 
- if(!username){
-  showMessage("message1","Please enter an Instagram username.","error");
+ if(!username||!key){
+  showMessage("Please enter the username and Export Key.","error");
   return;
  }
 
- firstWinner=username;
- document.getElementById("panel1").classList.add("hidden");
- document.getElementById("panel2").classList.remove("hidden");
- document.getElementById("step1").classList.remove("active");
- document.getElementById("step2").classList.add("active");
-}
-
-function backToStep1(){
- document.getElementById("panel2").classList.add("hidden");
- document.getElementById("panel1").classList.remove("hidden");
- document.getElementById("step2").classList.remove("active");
- document.getElementById("step1").classList.add("active");
-}
-
-async function loadComments(){
- const postUrl=document.getElementById("postUrl").value.trim();
- exportKey=document.getElementById("exportKey").value;
-
- if(!postUrl||!exportKey){
-  showMessage("message2","Please enter the post URL and Export Key.","error");
-  return;
- }
-
- const button=document.getElementById("loadButton");
+ const button=document.getElementById("continueButton");
  button.disabled=true;
- button.textContent="Loading comments...";
- document.getElementById("stats").classList.add("hidden");
+ button.textContent="PREPARING...";
 
  try{
-  const response=await fetch("/api/load",{
+  const response=await fetch("/api/create-session",{
    method:"POST",
    headers:{"Content-Type":"application/json"},
    body:JSON.stringify({
-    post_url:postUrl,
-    first_winner:firstWinner,
-    key:exportKey
+    first_winner:username,
+    key:key
    })
   });
 
   const data=await response.json();
-  if(!response.ok) throw new Error(data.error||"Unable to load comments.");
+  if(!response.ok)throw new Error(data.error||"Unable to prepare giveaway.");
 
-  drawId=data.draw_id;
-  document.getElementById("commentCount").textContent=data.comment_count;
-  document.getElementById("participantCount").textContent=data.participant_count;
-  document.getElementById("previewWinner").textContent="@"+firstWinner;
-  document.getElementById("stats").classList.remove("hidden");
-
-  showMessage("message2","Comments successfully imported. The first winner has been verified.","success");
+  window.open("/presentation/"+data.draw_id,"_blank");
+  showMessage("Presentation screen opened successfully.","success");
 
  }catch(error){
-  showMessage("message2",error.message,"error");
+  showMessage(error.message,"error");
  }finally{
   button.disabled=false;
-  button.textContent="Load Comments";
+  button.textContent="OPEN PRESENTATION";
  }
-}
-
-function openPresentation(){
- if(!drawId)return;
- window.open("/presentation/"+drawId,"_blank");
 }
 </script>
 </body>
@@ -223,19 +148,55 @@ body{
  linear-gradient(145deg,#11101d,#171326 55%,#100f19);
  color:#fff;font-family:Arial,sans-serif;
 }
-header{text-align:center;padding:35px 20px 15px}
+header{text-align:center;padding:30px 20px 12px}
 .logo{font-size:30px;font-weight:900;letter-spacing:3px}
 .logo span{color:#c29aff}
-.tagline{color:#aaa3bd;font-size:13px;letter-spacing:3px;margin-top:12px;text-transform:uppercase}
-.main{max-width:1150px;margin:55px auto 30px;padding:20px;text-align:center}
-.eyebrow{color:#d4b4ff;font-size:13px;letter-spacing:5px;text-transform:uppercase;margin-bottom:18px}
-h1{font-size:clamp(34px,5vw,62px);margin:0 0 15px;font-weight:900;letter-spacing:-1px}
-.intro{font-size:16px;color:#aaa5b9;margin:0 auto 55px;max-width:600px;line-height:1.6}
-.winners{display:grid;grid-template-columns:1fr 1fr;gap:26px}
+.tagline{color:#aaa3bd;font-size:12px;letter-spacing:3px;margin-top:10px;text-transform:uppercase}
+.main{max-width:1150px;margin:35px auto;padding:20px;text-align:center}
+.eyebrow{color:#d4b4ff;font-size:12px;letter-spacing:5px;text-transform:uppercase;margin-bottom:15px}
+h1{font-size:clamp(32px,5vw,57px);margin:0 0 12px;font-weight:900}
+.intro{font-size:15px;color:#aaa5b9;margin:0 auto 35px;max-width:650px;line-height:1.6}
+.panel{
+ max-width:700px;margin:0 auto 30px;text-align:left;
+ padding:28px;background:linear-gradient(145deg,#29213b,#191625);
+ border:1px solid #60447f;border-radius:20px;
+ box-shadow:0 20px 70px #0005;
+}
+.panel h2{margin:0 0 8px;font-size:22px}
+.panel p{color:#aaa5b9;font-size:13px;line-height:1.6;margin:0 0 20px}
+label{display:block;color:#d9d0e9;font-size:13px;margin:17px 0 8px}
+input,select{
+ width:100%;padding:14px;border-radius:9px;
+ border:1px solid #49415c;background:#151220;
+ color:#fff;font-size:15px;outline:none;
+}
+input:focus,select:focus{border-color:#b68cff}
+button{
+ border:0;border-radius:50px;padding:17px 30px;
+ background:linear-gradient(110deg,#a9783d,#e0bd80,#a9783d);
+ color:#201526;font-size:14px;font-weight:900;
+ letter-spacing:1.5px;cursor:pointer;
+ box-shadow:0 8px 35px #d0a15b33;
+ transition:transform .2s,box-shadow .2s;
+}
+button:hover{transform:translateY(-2px);box-shadow:0 12px 40px #d0a15b55}
+button:disabled{opacity:.55;cursor:wait;transform:none}
+.primary{width:100%;margin-top:23px}
+.secondary{background:#554071;color:white;box-shadow:none}
+.hidden{display:none!important}
+.message{display:none;margin-top:15px;padding:13px;border-radius:9px;font-size:13px;line-height:1.5}
+.error{display:block;background:#49252e;color:#ffb9c3}
+.success{display:block;background:#1d4539;color:#a7f0d2}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:22px}
+.stat{background:#151220;padding:19px 10px;border-radius:12px;text-align:center}
+.stat strong{display:block;font-size:30px;color:#d0a6ff;margin-bottom:7px}
+.stat span{font-size:11px;color:#aaa5b9;letter-spacing:1px}
+.game-title{font-size:20px;font-weight:800;color:#f0d49f;margin-bottom:22px}
+.winners{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}
 .card{
- position:relative;overflow:hidden;min-height:310px;
+ position:relative;overflow:hidden;min-height:230px;
  display:flex;flex-direction:column;justify-content:center;align-items:center;
- padding:35px 20px;border-radius:24px;
+ padding:25px 15px;border-radius:20px;
  background:linear-gradient(145deg,#29213b,#191625);
  border:1px solid #6a4b8b;
  box-shadow:0 20px 70px #0005;
@@ -247,14 +208,14 @@ h1{font-size:clamp(34px,5vw,62px);margin:0 0 15px;font-weight:900;letter-spacing
 }
 .card.revealing:before{animation:shine 1.1s linear infinite}
 @keyframes shine{to{transform:translateX(120%)}}
-.card-label{font-size:13px;letter-spacing:5px;color:#d3b5ff;margin-bottom:27px}
+.card-label{font-size:12px;letter-spacing:4px;color:#d3b5ff;margin-bottom:25px}
 .username{
- font-size:clamp(23px,3.8vw,43px);font-weight:900;
- overflow-wrap:anywhere;min-height:55px;
+ font-size:clamp(19px,3vw,34px);font-weight:900;
+ overflow-wrap:anywhere;min-height:42px;
  text-shadow:0 0 30px #c39aff55;
 }
-.username.waiting{color:#c5b6d8;letter-spacing:8px}
-.card-caption{font-size:12px;letter-spacing:3px;color:#aaa3b9;margin-top:25px}
+.username.waiting{color:#c5b6d8}
+.card-caption{font-size:10px;letter-spacing:3px;color:#aaa3b9;margin-top:22px}
 .card.revealing{animation:pulse 1s ease-in-out infinite alternate;border-color:#c59bff}
 @keyframes pulse{
  from{box-shadow:0 15px 45px #0005,0 0 5px #a36be0}
@@ -262,79 +223,212 @@ h1{font-size:clamp(34px,5vw,62px);margin:0 0 15px;font-weight:900;letter-spacing
 }
 .card.revealed{border-color:#d2ad77;box-shadow:0 15px 60px #0005,0 0 35px #d2ad7730}
 .card.revealed .card-label{color:#f0cf91}
-button{
- display:block;margin:45px auto 0;padding:20px 42px;
- border:1px solid #e0bd80;border-radius:50px;
- background:linear-gradient(110deg,#a9783d,#e0bd80,#a9783d);
- color:#201526;font-size:15px;font-weight:900;
- letter-spacing:2px;cursor:pointer;
- box-shadow:0 8px 35px #d0a15b33;
- transition:transform .2s,box-shadow .2s;
+.draw-area{text-align:center;margin-top:30px}
+.status{min-height:25px;margin:20px auto 0;color:#b7a9c8;font-size:13px;letter-spacing:1px}
+.verification{
+ max-width:600px;margin:30px auto 0;padding:22px;
+ background:#211b30;border:1px solid #70518e;border-radius:16px;
 }
-button:hover{transform:translateY(-3px);box-shadow:0 12px 40px #d0a15b55}
-button:disabled{opacity:.65;cursor:wait;transform:none}
-.status{min-height:28px;margin:25px auto 0;color:#b7a9c8;font-size:14px;letter-spacing:1px}
-.footer{text-align:center;color:#777087;font-size:11px;letter-spacing:3px;padding:45px 15px}
+.verification strong{display:block;font-size:24px;letter-spacing:3px;color:#f0cf91;margin:12px 0}
+.verification a{color:#cdaaff;font-size:13px}
+.footer{text-align:center;color:#777087;font-size:11px;letter-spacing:3px;padding:40px 15px}
 .confetti{position:fixed;top:-20px;width:9px;height:15px;z-index:10;pointer-events:none;animation:fall linear forwards}
 @keyframes fall{to{transform:translateY(110vh) rotate(900deg);opacity:.1}}
 @media(max-width:700px){
- .main{margin:25px auto}
- .winners{grid-template-columns:1fr;gap:17px}
- .card{min-height:230px}
- .intro{margin-bottom:35px}
+ .main{margin:20px auto}
+ .panel{padding:21px}
+ .winners{grid-template-columns:1fr}
+ .card{min-height:190px}
+ .stats{gap:7px}
+ .stat strong{font-size:23px}
+ .stat span{font-size:9px}
 }
 </style>
 </head>
 <body>
 <header>
  <div class="logo">GIVEAWAY <span>WINNER</span></div>
- <div class="tagline">The official winner announcement</div>
+ <div class="tagline">The official giveaway experience</div>
 </header>
 
 <main class="main">
- <div class="eyebrow">The moment we've been waiting for</div>
- <h1>And the winners are...</h1>
+ <div class="eyebrow">WELCOME TO THE GIVEAWAY</div>
+ <h1>Let's find our winners!</h1>
  <p class="intro">
- Two winners. One exciting moment.
- Thank you to everyone who participated!
+ It's time to discover who will be taking home the prizes.
+ Let's get started!
  </p>
 
- <div class="winners">
-  <div class="card" id="card1">
-   <div class="card-label">WINNER #1</div>
-   <div class="username waiting" id="winner1">?</div>
-   <div class="card-caption">GIVEAWAY WINNER</div>
+ <section class="panel" id="setupPanel">
+  <h2>Giveaway Setup</h2>
+  <p>Enter the giveaway details to load the participants and start the draw.</p>
+
+  <label>Giveaway Name</label>
+  <input id="giveawayName" placeholder="Enter giveaway name">
+
+  <label>Instagram Post URL</label>
+  <input id="postUrl" type="url" placeholder="https://www.instagram.com/p/...">
+
+  <label>Number of Winners</label>
+  <select id="winnerCount">
+   <option value="1">1 Winner</option>
+   <option value="2" selected>2 Winners</option>
+   <option value="3">3 Winners</option>
+   <option value="4">4 Winners</option>
+   <option value="5">5 Winners</option>
+   <option value="6">6 Winners</option>
+   <option value="7">7 Winners</option>
+   <option value="8">8 Winners</option>
+   <option value="9">9 Winners</option>
+   <option value="10">10 Winners</option>
+  </select>
+
+  <button class="primary" id="loadButton" onclick="loadParticipants()">
+   LOAD PARTICIPANTS
+  </button>
+  <div id="loadMessage" class="message"></div>
+
+  <div id="stats" class="hidden">
+   <div class="stats">
+    <div class="stat">
+     <strong id="commentCount">0</strong>
+     <span>TOTAL COMMENTS</span>
+    </div>
+    <div class="stat">
+     <strong id="participantCount">0</strong>
+     <span>UNIQUE USERS</span>
+    </div>
+    <div class="stat">
+     <strong id="winnerTotal">0</strong>
+     <span>WINNERS</span>
+    </div>
+   </div>
+  </div>
+ </section>
+
+ <section id="drawPanel" class="hidden">
+  <div class="game-title" id="displayGiveawayName"></div>
+  <div class="winners" id="winnerCards"></div>
+
+  <div class="draw-area">
+   <button id="drawButton" onclick="revealWinners()">
+    START THE DRAW
+   </button>
+   <div class="status" id="status">
+    All participants are ready. Good luck!
+   </div>
   </div>
 
-  <div class="card" id="card2">
-   <div class="card-label">WINNER #2</div>
-   <div class="username waiting" id="winner2">?</div>
-   <div class="card-caption">GIVEAWAY WINNER</div>
+  <div id="verification" class="verification hidden">
+   <div class="card-label">RESULT VERIFICATION CODE</div>
+   <strong id="verificationCode"></strong>
+   <a href="/verify" target="_blank">Verify these results</a>
   </div>
- </div>
-
- <button id="revealButton" onclick="revealWinners()">
-  REVEAL THE WINNERS
- </button>
-
- <div class="status" id="status">
-  Get ready. The winners will be revealed together.
- </div>
+ </section>
 </main>
 
 <div class="footer">GIVEAWAY WINNER</div>
 
 <script>
 const DRAW_ID = {{ draw_id|tojson }};
+let participants = [];
+let loaded = false;
 let completed = false;
+let animationTimers = [];
+
+function showMessage(id,text,type){
+ const el=document.getElementById(id);
+ el.textContent=text;
+ el.className="message "+type;
+}
 
 function sleep(ms){
  return new Promise(resolve=>setTimeout(resolve,ms));
 }
 
+async function loadParticipants(){
+ const name=document.getElementById("giveawayName").value.trim();
+ const postUrl=document.getElementById("postUrl").value.trim();
+ const winnerCount=Number(document.getElementById("winnerCount").value);
+
+ if(!name||!postUrl){
+  showMessage("loadMessage","Please enter the giveaway name and Instagram post URL.","error");
+  return;
+ }
+
+ const button=document.getElementById("loadButton");
+ button.disabled=true;
+ button.textContent="LOADING PARTICIPANTS...";
+
+ try{
+  const response=await fetch("/api/load",{
+   method:"POST",
+   headers:{"Content-Type":"application/json"},
+   body:JSON.stringify({
+    draw_id:DRAW_ID,
+    giveaway_name:name,
+    post_url:postUrl,
+    winner_count:winnerCount
+   })
+  });
+
+  const data=await response.json();
+  if(!response.ok)throw new Error(data.error||"Unable to load participants.");
+
+  participants=data.participants;
+  loaded=true;
+
+  document.getElementById("commentCount").textContent=data.comment_count;
+  document.getElementById("participantCount").textContent=data.participant_count;
+  document.getElementById("winnerTotal").textContent=data.winner_count;
+  document.getElementById("displayGiveawayName").textContent=name;
+
+  document.getElementById("stats").classList.remove("hidden");
+  document.getElementById("drawPanel").classList.remove("hidden");
+
+  createWinnerCards(data.winner_count);
+
+  document.getElementById("setupPanel").classList.add("hidden");
+  document.getElementById("drawPanel").scrollIntoView({behavior:"smooth"});
+
+ }catch(error){
+  showMessage("loadMessage",error.message,"error");
+ }finally{
+  button.disabled=false;
+  button.textContent="LOAD PARTICIPANTS";
+ }
+}
+
+function createWinnerCards(count){
+ const container=document.getElementById("winnerCards");
+ container.innerHTML="";
+
+ for(let i=0;i<count;i++){
+  const card=document.createElement("div");
+  card.className="card";
+  card.id="card"+i;
+
+  const label=document.createElement("div");
+  label.className="card-label";
+  label.textContent="WINNER #"+(i+1);
+
+  const username=document.createElement("div");
+  username.className="username waiting";
+  username.id="winner"+i;
+  username.textContent="?";
+
+  const caption=document.createElement("div");
+  caption.className="card-caption";
+  caption.textContent="GIVEAWAY WINNER";
+
+  card.append(label,username,caption);
+  container.appendChild(card);
+ }
+}
+
 function confetti(){
  const symbols=["✦","●","◆"];
- for(let i=0;i<100;i++){
+ for(let i=0;i<130;i++){
   const piece=document.createElement("div");
   piece.className="confetti";
   piece.textContent=symbols[Math.floor(Math.random()*symbols.length)];
@@ -349,23 +443,25 @@ function confetti(){
 }
 
 async function revealWinners(){
- if(completed)return;
+ if(completed||!loaded)return;
 
- const button=document.getElementById("revealButton");
+ const button=document.getElementById("drawButton");
  const status=document.getElementById("status");
- const card1=document.getElementById("card1");
- const card2=document.getElementById("card2");
- const name1=document.getElementById("winner1");
- const name2=document.getElementById("winner2");
+ const count=Number(document.getElementById("winnerCount").value);
 
  button.disabled=true;
  button.textContent="DRAW IN PROGRESS...";
- status.textContent="Selecting the winners...";
+ status.textContent="Good luck to all participants!";
 
- card1.classList.add("revealing");
- card2.classList.add("revealing");
- name1.classList.remove("waiting");
- name2.classList.remove("waiting");
+ const cards=[];
+ const names=[];
+
+ for(let i=0;i<count;i++){
+  cards.push(document.getElementById("card"+i));
+  names.push(document.getElementById("winner"+i));
+  cards[i].classList.add("revealing");
+  names[i].classList.remove("waiting");
+ }
 
  let result;
 
@@ -379,40 +475,180 @@ async function revealWinners(){
   result=await response.json();
   if(!response.ok)throw new Error(result.error||"The draw could not be completed.");
 
-  // Both cards animate together before the results are revealed.
+  // Cycle through the actual usernames on every winner card.
   const start=Date.now();
-  while(Date.now()-start<4200){
-   name1.textContent="✦ ✦ ✦";
-   name2.textContent="✦ ✦ ✦";
-   await sleep(180);
-   name1.textContent="DRAWING";
-   name2.textContent="DRAWING";
-   await sleep(180);
+  let index=0;
+
+  while(Date.now()-start<6500){
+   for(let i=0;i<count;i++){
+    names[i].textContent="@"+participants[(index+i*7)%participants.length];
+   }
+   index=(index+1)%participants.length;
+   await sleep(90);
   }
 
-  name1.textContent="@"+result.first_winner;
-  name2.textContent="@"+result.second_winner;
+  // Reveal all winners at the same time.
+  result.winners.forEach((winner,i)=>{
+   names[i].textContent="@"+winner;
+  });
 
-  card1.classList.remove("revealing");
-  card2.classList.remove("revealing");
-  card1.classList.add("revealed");
-  card2.classList.add("revealed");
+  cards.forEach(card=>{
+   card.classList.remove("revealing");
+   card.classList.add("revealed");
+  });
 
-  status.textContent="Congratulations to both winners!";
+  status.textContent="Congratulations to all our winners!";
   button.textContent="WINNERS ANNOUNCED";
   completed=true;
+
+  document.getElementById("verificationCode").textContent=result.verification_code;
+  document.getElementById("verification").classList.remove("hidden");
+
   confetti();
 
  }catch(error){
-  card1.classList.remove("revealing");
-  card2.classList.remove("revealing");
-  name1.textContent="?";
-  name2.textContent="?";
-  name1.classList.add("waiting");
-  name2.classList.add("waiting");
+  cards.forEach((card,i)=>{
+   card.classList.remove("revealing");
+   names[i].textContent="?";
+   names[i].classList.add("waiting");
+  });
+
   status.textContent=error.message;
   button.disabled=false;
   button.textContent="TRY AGAIN";
+ }
+}
+</script>
+</body>
+</html>
+"""
+
+
+VERIFY_PAGE = r"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Giveaway Winner | Verification</title>
+<style>
+*{box-sizing:border-box}
+body{
+ margin:0;min-height:100vh;background:linear-gradient(145deg,#11101d,#211832);
+ color:#fff;font-family:Arial,sans-serif;
+ display:flex;align-items:center;justify-content:center;padding:20px;
+}
+.panel{
+ width:100%;max-width:620px;padding:35px;
+ background:#1b1a2a;border:1px solid #51406b;border-radius:20px;
+ box-shadow:0 20px 70px #0006;
+}
+.logo{text-align:center;font-size:25px;font-weight:900;letter-spacing:2px;margin-bottom:10px}
+.logo span{color:#b68cff}
+.sub{text-align:center;color:#aaa5b9;font-size:13px;margin-bottom:30px}
+h1{text-align:center;font-size:25px}
+label{display:block;margin:20px 0 8px;color:#d9d6e8;font-size:14px}
+input{
+ width:100%;padding:16px;border-radius:9px;
+ border:1px solid #49415c;background:#11101d;color:#fff;font-size:17px;
+}
+button{
+ width:100%;margin-top:18px;padding:16px;border:0;border-radius:9px;
+ background:#8755d5;color:white;font-size:14px;font-weight:800;cursor:pointer;
+}
+.message{display:none;margin-top:18px;padding:14px;border-radius:9px;line-height:1.5}
+.error{display:block;background:#49252e;color:#ffb9c3}
+.success{display:block;background:#1d4539;color:#a7f0d2}
+.results{margin-top:25px}
+.result-item{padding:14px;margin-top:10px;border-radius:10px;background:#11101d}
+.result-item span{display:block;color:#aaa5b9;font-size:11px;margin-bottom:7px}
+.result-item strong{font-size:18px;overflow-wrap:anywhere}
+.status{margin-top:18px;color:#a7f0d2;font-size:13px;text-align:center}
+</style>
+</head>
+<body>
+<div class="panel">
+ <div class="logo">GIVEAWAY <span>WINNER</span></div>
+ <div class="sub">Official result verification</div>
+ <h1>Verify Giveaway Results</h1>
+
+ <label>Verification Code</label>
+ <input id="code" placeholder="GW-XXXXXX" autocomplete="off">
+
+ <button id="verifyButton" onclick="verifyCode()">VERIFY RESULTS</button>
+ <div id="message" class="message"></div>
+ <div id="results" class="results"></div>
+</div>
+
+<script>
+function showMessage(text,type){
+ const el=document.getElementById("message");
+ el.textContent=text;
+ el.className="message "+type;
+}
+
+async function verifyCode(){
+ const code=document.getElementById("code").value.trim();
+ const button=document.getElementById("verifyButton");
+ const results=document.getElementById("results");
+ results.innerHTML="";
+
+ if(!code){
+  showMessage("Please enter a verification code.","error");
+  return;
+ }
+
+ button.disabled=true;
+ button.textContent="VERIFYING...";
+
+ try{
+  const response=await fetch("/api/verify",{
+   method:"POST",
+   headers:{"Content-Type":"application/json"},
+   body:JSON.stringify({code:code})
+  });
+
+  const data=await response.json();
+  if(!response.ok)throw new Error(data.error||"Verification failed.");
+
+  const fields=[
+   ["Giveaway Name",data.giveaway_name],
+   ["Instagram Post",data.post_url],
+   ["Date and Time",data.created_at],
+   ["Total Comments",data.comment_count],
+   ["Unique Participants",data.participant_count],
+   ["Number of Winners",data.winner_count]
+  ];
+
+  fields.forEach(([label,value])=>{
+   const item=document.createElement("div");
+   item.className="result-item";
+   const span=document.createElement("span");
+   span.textContent=label;
+   const strong=document.createElement("strong");
+   strong.textContent=value;
+   item.append(span,strong);
+   results.appendChild(item);
+  });
+
+  data.winners.forEach((winner,index)=>{
+   const item=document.createElement("div");
+   item.className="result-item";
+   const span=document.createElement("span");
+   span.textContent="WINNER #"+(index+1);
+   const strong=document.createElement("strong");
+   strong.textContent="@"+winner;
+   item.append(span,strong);
+   results.appendChild(item);
+  });
+
+  showMessage("Verification successful. These are the recorded results.","success");
+
+ }catch(error){
+  showMessage(error.message,"error");
+ }finally{
+  button.disabled=false;
+  button.textContent="VERIFY RESULTS";
  }
 }
 </script>
@@ -441,9 +677,7 @@ def api_get(endpoint, params=None):
 
     if response.status_code != 200 or "error" in data:
         error = data.get("error", {})
-        raise Exception(
-            error.get("message", "Meta API error")
-        )
+        raise Exception(error.get("message", "Meta API error"))
 
     return data
 
@@ -464,9 +698,7 @@ def get_all_pages(endpoint, params=None):
 
         if response.status_code != 200 or "error" in data:
             error = data.get("error", {})
-            raise Exception(
-                error.get("message", "Pagination error.")
-            )
+            raise Exception(error.get("message", "Pagination error."))
 
     return results
 
@@ -560,6 +792,18 @@ def fetch_participants(post_url):
     return len(comments), usernames
 
 
+def generate_verification_code():
+    existing = {
+        session.get("verification_code")
+        for session in DRAW_SESSIONS.values()
+    }
+
+    while True:
+        code = "GW-" + secrets.token_hex(3).upper()
+        if code not in existing:
+            return code
+
+
 @app.route("/")
 def home():
     return render_template_string(ADMIN_PAGE)
@@ -576,6 +820,11 @@ def presentation(draw_id):
     )
 
 
+@app.route("/verify")
+def verify_page():
+    return render_template_string(VERIFY_PAGE)
+
+
 @app.route("/health")
 def health():
     return jsonify({
@@ -584,62 +833,115 @@ def health():
     })
 
 
-@app.route("/api/load", methods=["POST"])
-def load_comments():
+@app.route("/api/create-session", methods=["POST"])
+def create_session():
     data = request.get_json(silent=True) or {}
 
     if not check_key(data):
         return jsonify({"error": "Invalid Export Key."}), 403
 
+    first_winner = normalize_username(
+        data.get("first_winner", "")
+    )
+
+    if not first_winner:
+        return jsonify({
+            "error": "First winner username is required."
+        }), 400
+
+    draw_id = uuid.uuid4().hex
+
+    DRAW_SESSIONS[draw_id] = {
+        "first_winner": first_winner,
+        "participants": [],
+        "eligible": [],
+        "comment_count": 0,
+        "giveaway_name": "",
+        "post_url": "",
+        "winner_count": 0,
+        "winners": None,
+        "verification_code": None,
+        "created_at": None
+    }
+
+    return jsonify({
+        "status": "ok",
+        "draw_id": draw_id
+    })
+
+
+@app.route("/api/load", methods=["POST"])
+def load_comments():
+    data = request.get_json(silent=True) or {}
+    draw_id = data.get("draw_id", "")
+
+    session = DRAW_SESSIONS.get(draw_id)
+
+    if not session:
+        return jsonify({
+            "error": "Presentation session not found. Please start again."
+        }), 404
+
+    if session["winners"] is not None:
+        return jsonify({
+            "error": "This giveaway has already been completed."
+        }), 400
+
+    giveaway_name = str(data.get("giveaway_name", "")).strip()
+    post_url = str(data.get("post_url", "")).strip()
+
     try:
-        first_winner = normalize_username(
-            data.get("first_winner", "")
-        )
+        winner_count = int(data.get("winner_count", 0))
+    except (TypeError, ValueError):
+        winner_count = 0
 
-        if not first_winner:
-            return jsonify({
-                "error": "First winner username is required."
-            }), 400
+    if not giveaway_name or not post_url:
+        return jsonify({
+            "error": "Giveaway name and Instagram URL are required."
+        }), 400
 
-        comment_count, usernames = fetch_participants(
-            data.get("post_url", "")
-        )
+    if winner_count < 1 or winner_count > 10:
+        return jsonify({
+            "error": "Choose between 1 and 10 winners."
+        }), 400
+
+    try:
+        comment_count, usernames = fetch_participants(post_url)
+
+        first_winner = session["first_winner"]
 
         if first_winner not in usernames:
             return jsonify({
                 "error": (
                     "The selected first winner was not found "
-                    "among the participants. Check the username."
+                    "among the participants. Please check the username."
                 )
             }), 400
 
-        eligible = [
-            username for username in usernames
-            if username != first_winner
-        ]
-
-        if not eligible:
+        if winner_count > len(usernames):
             return jsonify({
-                "error": "There are not enough participants."
+                "error": "There are not enough unique participants."
             }), 400
 
-        draw_id = uuid.uuid4().hex
+        eligible = [
+            username
+            for normalized, username in usernames.items()
+            if normalized != first_winner
+        ]
 
-        DRAW_SESSIONS[draw_id] = {
-            "first_winner": usernames[first_winner],
-            "second_winner": None,
-            "participants": list(usernames.values()),
-            "eligible": [
-                usernames[username] for username in eligible
-            ],
-            "comment_count": comment_count
-        }
+        session["participants"] = list(usernames.values())
+        session["eligible"] = eligible
+        session["comment_count"] = comment_count
+        session["giveaway_name"] = giveaway_name
+        session["post_url"] = post_url
+        session["winner_count"] = winner_count
 
         return jsonify({
             "status": "ok",
-            "draw_id": draw_id,
             "comment_count": comment_count,
-            "participant_count": len(usernames)
+            "participant_count": len(usernames),
+            "winner_count": winner_count,
+            "participants": list(usernames.values())
         })
 
     except Exception as error:
@@ -647,7 +949,7 @@ def load_comments():
 
 
 @app.route("/api/draw", methods=["POST"])
-def draw_winner():
+def draw_winners():
     data = request.get_json(silent=True) or {}
     draw_id = data.get("draw_id", "")
 
@@ -658,17 +960,71 @@ def draw_winner():
             "error": "Draw not found. Please load the post again."
         }), 404
 
-    if session["second_winner"] is None:
-        session["second_winner"] = secrets.choice(
-            session["eligible"]
+    if not session["participants"]:
+        return jsonify({
+            "error": "Participants have not been loaded."
+        }), 400
+
+    if session["winners"] is None:
+        additional_count = session["winner_count"] - 1
+
+        additional_winners = secrets.SystemRandom().sample(
+            session["eligible"],
+            additional_count
         )
+
+        session["winners"] = [
+            session["participants"][
+                next(
+                    i for i, username in enumerate(session["participants"])
+                    if normalize_username(username) == session["first_winner"]
+                )
+            ]
+        ] + additional_winners
+
+        session["verification_code"] = generate_verification_code()
+
+        from datetime import datetime, timezone
+        session["created_at"] = datetime.now(
+            timezone.utc
+        ).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     return jsonify({
         "status": "ok",
-        "first_winner": session["first_winner"],
-        "second_winner": session["second_winner"],
-        "participant_count": len(session["participants"])
+        "winners": session["winners"],
+        "verification_code": session["verification_code"]
     })
+
+
+@app.route("/api/verify", methods=["POST"])
+def verify_results():
+    data = request.get_json(silent=True) or {}
+    supplied_code = str(data.get("code", "")).strip().upper()
+
+    if not supplied_code:
+        return jsonify({"error": "Please enter a verification code."}), 400
+
+    for session in DRAW_SESSIONS.values():
+        saved_code = session.get("verification_code")
+
+        if saved_code and hmac.compare_digest(
+            supplied_code,
+            saved_code
+        ):
+            return jsonify({
+                "status": "verified",
+                "giveaway_name": session["giveaway_name"],
+                "post_url": session["post_url"],
+                "created_at": session["created_at"],
+                "comment_count": session["comment_count"],
+                "participant_count": len(session["participants"]),
+                "winner_count": session["winner_count"],
+                "winners": session["winners"]
+            })
+
+    return jsonify({
+        "error": "Verification code not found or session has expired."
+    }), 404
 
 
 if __name__ == "__main__":
