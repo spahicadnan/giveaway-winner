@@ -12,7 +12,9 @@ app = Flask(__name__)
 
 ACCESS_TOKEN = os.environ.get("IG_ACCESS_TOKEN")
 EXPORT_KEY = os.environ.get("EXPORT_KEY")
-GRAPH_URL = "https://graph.instagram.com/v27.0"
+
+IG_USER_ID = "17841480659359837"
+GRAPH_URL = "https://graph.facebook.com/v27.0"
 
 
 PAGE = """
@@ -58,7 +60,7 @@ button {
 <label>Instagram link objave</label>
 <input name="post_url" type="url" required
 placeholder="https://www.instagram.com/p/..." />
-<label>Export key</label>
+<label>Export Key</label>
 <input name="key" type="password" required
 placeholder="Tvoj EXPORT_KEY" />
 <button type="submit">Preuzmi komentare (CSV)</button>
@@ -70,31 +72,35 @@ placeholder="Tvoj EXPORT_KEY" />
 
 
 def api_get(endpoint, params=None):
-    params = params or {}
-    params["access_token"] = ACCESS_TOKEN
+    if not ACCESS_TOKEN:
+        raise Exception("Instagram token nije postavljen na Renderu.")
+
+    query = dict(params or {})
+    query["access_token"] = ACCESS_TOKEN
 
     response = requests.get(
         f"{GRAPH_URL}/{endpoint}",
-        params=params,
-        timeout=30
+        params=query,
+        timeout=40
     )
 
-    data = response.json()
+    try:
+        data = response.json()
+    except Exception:
+        raise Exception("Meta API nije vratio ispravan odgovor.")
 
     if response.status_code != 200 or "error" in data:
         error = data.get("error", {})
-        raise Exception(
-            error.get("message", "Instagram API greška")
-        )
+        message = error.get("message", "Nepoznata Meta API greška")
+        code = error.get("code", "")
+        raise Exception(f"Meta API greška {code}: {message}")
 
     return data
 
 
 def get_all_pages(endpoint, params=None):
-    params = params or {"limit": 100}
     results = []
-
-    data = api_get(endpoint, params)
+    data = api_get(endpoint, params or {"limit": 100})
 
     while True:
         results.extend(data.get("data", []))
@@ -104,18 +110,25 @@ def get_all_pages(endpoint, params=None):
         if not next_url:
             break
 
-        response = requests.get(next_url, timeout=30)
-        data = response.json()
+        response = requests.get(next_url, timeout=40)
+
+        try:
+            data = response.json()
+        except Exception:
+            raise Exception("Greška pri učitavanju naredne stranice.")
 
         if response.status_code != 200 or "error" in data:
-            raise Exception("Greška pri učitavanju naredne stranice.")
+            error = data.get("error", {})
+            raise Exception(
+                error.get("message", "Greška pri paginaciji.")
+            )
 
     return results
 
 
 def extract_shortcode(url):
     match = re.search(
-        r"instagram\.com/(?:p|reel|tv)/([^/?]+)",
+        r"instagram\.com/(?:p|reel|tv)/([^/?#]+)",
         url
     )
 
@@ -132,7 +145,10 @@ def home():
 
 @app.route("/health")
 def health():
-    return {"status": "ok", "application": "Giveaway Winner"}
+    return {
+        "status": "ok",
+        "application": "Giveaway Winner"
+    }
 
 
 @app.route("/export", methods=["POST"])
@@ -147,25 +163,30 @@ def export_comments():
         return "Neispravan Export Key.", 403
 
     try:
-        shortcode = extract_shortcode(
-            request.form.get("post_url", "")
+        post_url = request.form.get("post_url", "")
+        shortcode = extract_shortcode(post_url)
+
+        # Provjera pristupa Instagram profilu
+        profile = api_get(
+            IG_USER_ID,
+            {"fields": "id,username"}
         )
 
-        # Provjera Instagram profila
-        profile = api_get("me", {
-            "fields": "user_id,username"
-        })
+        # Učitavanje objava Instagram profila
+        media = get_all_pages(
+            f"{IG_USER_ID}/media",
+            {
+                "fields": "id,permalink,comments_count,timestamp",
+                "limit": 100
+            }
+        )
 
-        # Pronalazak objave na povezanom profilu
-        media = get_all_pages("me/media", {
-            "fields": "id,permalink,comments_count,timestamp",
-            "limit": 100
-        })
-
+        # Pronalaženje tražene objave
         target = None
 
         for item in media:
             permalink = item.get("permalink", "")
+
             try:
                 if extract_shortcode(permalink) == shortcode:
                     target = item
@@ -175,12 +196,13 @@ def export_comments():
 
         if not target:
             return (
-                "Objava nije pronađena na Instagram profilu "
-                "povezanom s ovim tokenom.",
+                "Objava nije pronađena na profilu "
+                + profile.get("username", "")
+                + ". Provjeri link i pristup profilu.",
                 404
             )
 
-        # Preuzimanje svih dostupnih komentara
+        # Preuzimanje komentara sa svim dostupnim stranicama
         comments = get_all_pages(
             f"{target['id']}/comments",
             {
@@ -216,11 +238,9 @@ def export_comments():
 
         if missing_usernames:
             return (
-                f"API je pronašao {len(comments)} komentara, "
-                f"ali za {missing_usernames} komentara nije "
-                "vratio korisničko ime. CSV nije preuzet jer "
-                "nije spreman za izvlačenje dobitnika. "
-                "Potrebno je provjeriti API dozvole i podatke.",
+                f"Pronađeno je {len(comments)} komentara, "
+                f"ali {missing_usernames} nema korisničko ime. "
+                "CSV nije preuzet. Potrebna je dodatna provjera.",
                 422
             )
 
